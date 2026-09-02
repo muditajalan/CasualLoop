@@ -1,0 +1,60 @@
+{
+  "WEST_MAR_2026": {
+    "label": "Multi-factor movement (3 real drivers)",
+    "scope": {
+      "region": "West"
+    },
+    "period": "2026-03",
+    "actual_net_revenue": 8625895.89,
+    "counterfactual_no_events": 10611304.32,
+    "total_event_delta": -1985408.43,
+    "delta_pct_vs_counterfactual": -18.71,
+    "driver_contributions_inr": {
+      "competitor": -548043.56,
+      "churn": -676952.87,
+      "stockout": -598431.48
+    },
+    "driver_share_pct": {
+      "competitor": 27.6,
+      "churn": 34.1,
+      "stockout": 30.1
+    },
+    "unexplained_interaction_pct": 8.2
+  },
+  "SOUTH_MAY_2026": {
+    "label": "Ambiguous / contradictory evidence -> expect ABSTAIN",
+    "scope": {
+      "region": "South"
+    },
+    "period": "2026-05",
+    "actual_net_revenue": 6668471.28,
+    "counterfactual_no_events": 8105621.31,
+    "total_event_delta": -1437150.03,
+    "delta_pct_vs_counterfactual": -17.73,
+    "driver_contributions_inr": {
+      "price_test": -1437150.03
+    },
+    "driver_share_pct": {
+      "price_test": 100.0
+    },
+    "unexplained_interaction_pct": 0.0
+  },
+  "NEWSKU_JUN_2026": {
+    "label": "Sparse history (SKU launched 2026-05-15)",
+    "scope": {
+      "sku": "NC-BOOST-01"
+    },
+    "period": "2026-06",
+    "actual_net_revenue": 2473335.38,
+    "counterfactual_no_events": 3827277.21,
+    "total_event_delta": -1353941.83,
+    "delta_pct_vs_counterfactual": -35.38,
+    "driver_contributions_inr": {
+      "launch_dip": -1268410.01
+    },
+    "driver_share_pct": {
+      "launch_dip": 93.7
+    },
+    "unexplained_interaction_pct": 6.3
+  }
+}

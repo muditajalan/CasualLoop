@@ -1,0 +1,209 @@
+contract_version: "0.3"
+owner_org: "NovaCare Consumer Pvt Ltd"
+jurisdiction: "India - DPDP Act 2023"
+currency: INR
+fiscal_calendar: "Apr-Mar, weeks start Monday"
+
+sources:
+  order_db:
+    file: data/sales_orders.csv
+    system: "OrderDB (Postgres)"
+    grain: "order line"
+    refresh: "daily 02:00 IST"
+    trust: high
+  ops_hub:
+    file: data/weekly_ops.csv
+    system: "MarketingHub + WMS export"
+    grain: "week x region x channel"
+    refresh: "weekly Mon 09:00 IST"
+    trust: medium
+    note: "Weekly grain - cannot support day-level attribution. Engine must widen
+           the evidence window to whole weeks when citing this source."
+  signal_store:
+    file: data/signals.csv
+    system: "CRM notes / Zendesk / market intel"
+    grain: "event"
+    refresh: "irregular, event-driven"
+    trust: low
+    note: "Qualitative only. May raise or lower confidence in a hypothesis but
+           must never originate a quantitative claim."
+
+roles:
+  regional_ops_west:   {persona: disha,  regions: [West],  columns_denied: [gross_margin_pct, cogs]}
+  regional_ops_south:  {persona: disha,  regions: [South], columns_denied: [gross_margin_pct, cogs]}
+  business_analyst:    {persona: farhan, regions: [North, South, East, West], columns_denied: []}
+  finance_lead:        {persona: farhan, regions: [North, South, East, West], columns_denied: []}
+
+kpis:
+  net_revenue:
+    display: "Net Revenue"
+    definition: "Gross revenue less trade discount. Excludes GST and freight."
+    formula: "SUM(units * list_price) - SUM(discount_value)"
+    source: order_db
+    grain: [order_date, region, channel, sku, account_id]
+    unit: INR
+    direction: higher_is_better
+    owner_role: regional_ops_west
+    materiality:
+      statistical: "outside 95% prediction interval of STL baseline"
+      business_abs: 400000      # INR - below this we do not raise an insight
+      business_pct: 3.0         # % vs expected
+    drivers: [volume, price, mix, distribution_loss, stockout, competitor_price, marketing_spend, seasonality]
+    lineage: "order_db.sales_orders -> daily agg -> STL baseline -> contribution bridge"
+
+  units_sold:
+    display: "Units Sold"
+    definition: "Count of saleable units shipped on confirmed orders."
+    formula: "SUM(units)"
+    source: order_db
+    grain: [order_date, region, channel, sku, account_id]
+    unit: units
+    direction: higher_is_better
+    owner_role: regional_ops_west
+    materiality: {statistical: "outside 95% PI", business_abs: 400, business_pct: 4.0}
+    drivers: [distribution_loss, stockout, competitor_price, marketing_spend, seasonality]
+    lineage: "order_db.sales_orders -> daily agg"
+
+  avg_selling_price:
+    display: "Average Selling Price"
+    definition: "Net revenue divided by units sold. Blended across SKU mix -
+                 a move here can be pure mix shift with no list-price change."
+    formula: "net_revenue / units_sold"
+    source: order_db
+    grain: [order_date, region, channel, sku]
+    unit: INR
+    direction: neutral
+    owner_role: business_analyst
+    materiality: {statistical: "outside 95% PI", business_abs: 12, business_pct: 2.5}
+    drivers: [price, mix, discount_depth]
+    lineage: "derived: net_revenue / units_sold"
+    guard: "Never explain an ASP move without first running the mix-vs-price split."
+
+  gross_margin_pct:
+    display: "Gross Margin %"
+    definition: "(Net revenue - COGS) / Net revenue."
+    formula: "(SUM(net_revenue) - SUM(cogs)) / SUM(net_revenue)"
+    source: order_db
+    grain: [order_date, region, channel, sku]
+    unit: pct
+    direction: higher_is_better
+    owner_role: finance_lead
+    sensitivity: restricted        # column-level: hidden from regional_ops_*
+    materiality: {statistical: "outside 95% PI", business_abs: 0.8, business_pct: 1.5}
+    drivers: [discount_depth, mix, price]
+    lineage: "order_db.sales_orders -> daily agg"
+
+  active_accounts:
+    display: "Active Distributor Accounts"
+    definition: "Distinct retail accounts placing >=1 order in a trailing 30-day window."
+    formula: "COUNT(DISTINCT account_id) WHERE channel='Retail' OVER trailing_30d"
+    source: order_db
+    grain: [order_date, region]
+    unit: count
+    direction: higher_is_better
+    owner_role: regional_ops_west
+    materiality: {statistical: "drop >= 1 account vs trailing median", business_abs: 1, business_pct: 4.0}
+    drivers: [distribution_loss]
+    lineage: "order_db.sales_orders -> trailing 30d distinct count"
+
+# Candidate drivers the hypothesis engine is allowed to propose, each bound to a
+# controllable lever and an accountable owner (feeds the Round 2 action chain:
+# driver -> lever -> action -> expected impact -> owner -> confidence -> monitoring)
+driver_library:
+  distribution_loss:
+    test: "account-level revenue step-change vs trailing 8-week median"
+    evidence_sources: [order_db, signal_store]
+    lever: "Distributor win-back / territory reassignment"
+    owner: "Regional Sales Head"
+    controllable: true
+  stockout:
+    test: "ops_hub.stockout_days > 0 aligned to SKU-region revenue gap"
+    evidence_sources: [ops_hub, signal_store]
+    lever: "Safety-stock reset at the serving DC"
+    owner: "Supply Planning Lead"
+    controllable: true
+  competitor_price:
+    test: "ops_hub.competitor_price_index z-score < -2 in the anomaly window"
+    evidence_sources: [ops_hub, signal_store]
+    lever: "Tactical trade promotion / pack-price architecture"
+    owner: "Category Marketing Manager"
+    controllable: partially
+  marketing_spend:
+    test: "spend deviation vs trailing plan, lag 0-2 weeks"
+    evidence_sources: [ops_hub]
+    lever: "Reallocate working media budget"
+    owner: "Regional Marketing Manager"
+    controllable: true
+  price:
+    test: "list_price change decomposed from mix via bridge"
+    evidence_sources: [order_db]
+    lever: "List price / MRP revision"
+    owner: "Revenue Management"
+    controllable: true
+  mix:
+    test: "SKU mix shift with prices held at t-1"
+    evidence_sources: [order_db]
+    lever: "Assortment and shelf-space plan"
+    owner: "Category Marketing Manager"
+    controllable: true
+  volume:
+    test: "unit decomposition, prices held at t-1"
+    evidence_sources: [order_db]
+    lever: "Demand generation / trade activation"
+    owner: "Regional Sales Head"
+    controllable: true
+  discount_depth:
+    test: "discount_value / gross_revenue vs trailing median"
+    evidence_sources: [order_db]
+    lever: "Trade-spend guardrails"
+    owner: "Revenue Management"
+    controllable: true
+  seasonality:
+    test: "STL seasonal component of the baseline"
+    evidence_sources: [order_db]
+    lever: null
+    owner: null
+    controllable: false
+    note: "Explanatory only - never surfaced as a recommended action."
+
+# Transparent, non-LLM confidence model. Weights sum to 1.0.
+confidence_model:
+  weights:
+    evidence_corroboration: 0.30   # how many independent sources agree
+    magnitude_sufficiency:  0.25   # does this driver explain enough of the gap
+    uniqueness:             0.20   # does it also fire in unaffected regions (penalty)
+    timing_alignment:       0.15   # does the driver precede/coincide with the move
+    data_quality:           0.10   # freshness + history length
+  penalties:
+    contradictory_evidence: -0.20
+    history_lt_12_weeks:    -0.25   # sparse-history guard
+    stale_source_gt_2x_cadence: -0.10
+  bands:
+    high:   ">= 0.70"
+    medium: "0.45 - 0.69"
+    low:    "< 0.45"
+  abstain_rule: >
+    Abstain when ANY of the following hold. On abstention the engine must name the
+    leading hypothesis anyway, and state what specific evidence would resolve it -
+    "I do not know" is much less useful than "here is my best theory and here is
+    why I do not yet trust it".
+      1. The top hypothesis scores below 0.45.
+      2. The top two hypotheses are within 0.08 of each other and imply opposing actions.
+      3. Unexplained residual exceeds 40% of the movement.
+      4. The leading hypothesis is CONTRADICTED - qualitative signals argue against
+         it, or marketing spend rose >25% month-on-month while revenue fell. The
+         spend contradiction applies only to demand-side drivers (price, competitor,
+         marketing, mix, discount): a distributor cancelling its contract is not
+         affected by advertising spend, so applying it there is a category error.
+
+cross_kpi_patterns:
+  note: >
+    A single KPI cannot identify what KIND of problem occurred. Revenue down 15% is
+    equally consistent with "nobody bought" and "we raised prices and demand fell".
+    Reading net_revenue, units_sold and the MIX-ADJUSTED price effect together
+    resolves that before any hypothesis is tested. Blended ASP is not used for this:
+    the mix term usually dominates the price term and inverts the signal.
+  price_pushback:  {units: down, price: up,   drivers: [price, discount_depth, competitor_price]}
+  volume_shock:    {units: down, price: flat, drivers: [stockout, distribution_loss, competitor_price, marketing_spend]}
+  discounting:     {units: flat, price: down, drivers: [discount_depth, mix, price]}
+  broad_weakness:  {units: down, price: down, drivers: [competitor_price, discount_depth, distribution_loss]}
